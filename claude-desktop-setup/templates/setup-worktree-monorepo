@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Monorepo per-worktree setup for Claude Code Desktop.
+#
+# ONE top-level script wired to the SessionStart hook in .claude/settings.json.
+# It regenerates a single .claude/launch.json holding one config per previewable
+# app (each on its own deterministic port), then runs each app's first-run setup.
+#
+# Add/remove apps by editing the APPS list. Each entry is:
+#   "app_id|subdir|runtimeExecutable"
+# app_id            stable salt + Preview-dropdown label (keep it = subdir)
+# subdir            where the app lives, relative to repo root
+# runtimeExecutable path Desktop runs to boot it (that app's dev-wrapper)
+#
+# NOTE: app_id here MUST equal the APP_ID baked into each app's dev-wrapper, or
+# launch.json's port won't match the port the wrapper binds.
+set -e
+
+cd "$(dirname "$0")"
+WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$WORKTREE_ROOT"
+hash_of() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
+
+APPS=(
+  "web|web|web/script/dev"
+  "marketing|marketing|marketing/script/dev"
+  # Native apps (iOS/macOS, CLI) are NOT web previews — leave them out of
+  # launch.json. See the skill's reference.md "Native / non-web apps" note.
+)
+
+# === Always: regenerate the combined launch.json ===========================
+mkdir -p .claude
+configs=""
+for entry in "${APPS[@]}"; do
+  IFS='|' read -r id dir exe <<<"$entry"
+  port=$(( 30000 + $(hash_of "$WORKTREE_ROOT:$id") % 10000 ))
+  [ -n "$configs" ] && configs="${configs},"
+  configs="${configs}
+    { \"name\": \"${id}\", \"runtimeExecutable\": \"${exe}\", \"runtimeArgs\": [], \"autoPort\": true, \"port\": ${port} }"
+done
+
+cat > .claude/launch.json <<JSON
+{
+  "version": "0.0.1",
+  "configurations": [${configs}
+  ]
+}
+JSON
+
+# === First-run setup per app (each guarded by its own marker) ==============
+for entry in "${APPS[@]}"; do
+  IFS='|' read -r id dir exe <<<"$entry"
+  marker="${dir}/{{SETUP_MARKER}}"   # e.g. node_modules, vendor/bundle, .venv
+  if [ -e "$marker" ]; then
+    echo "[setup-worktree] ${id}: already configured — skipping"
+    continue
+  fi
+  echo "[setup-worktree] ${id}: first-run setup"
+  ( cd "$dir" && {
+      # EDIT per app — install deps, provision per-worktree DB, etc.
+      {{FIRST_RUN_COMMANDS}}
+  } )
+done

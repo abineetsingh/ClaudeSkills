@@ -1,0 +1,5 @@
+# .worktreeinclude — gitignored files Claude Code Desktop copies into each new
+# worktree. One path or glob per line (gitignore syntax). Use this for secrets
+# and local config that live outside version control but every worktree needs.
+.env
+.env.local

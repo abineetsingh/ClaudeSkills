@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# One-time per-worktree setup for Claude Code Desktop.
+#
+# Wired to the SessionStart hook in .claude/settings.json so it runs
+# automatically when Desktop spins up a new worktree/session. Two parts:
+#   1. ALWAYS: regenerate .claude/launch.json so the preview port matches THIS
+#      worktree (a moved/new worktree hashes to a different port).
+#   2. FIRST RUN: install deps + provision the per-worktree database, guarded
+#      by an idempotency marker so re-runs are a fast no-op.
+set -e
+
+cd "$(dirname "$0")"
+WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$WORKTREE_ROOT"
+
+hash_of() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
+
+# === Always: regenerate launch.json with this worktree's port ===============
+# APP_ID must match the dev-wrapper's APP_ID exactly, or launch.json's port
+# won't match the port the wrapper actually binds. (Monorepo with >1 app? Use
+# the setup-worktree-monorepo template instead — it emits one config per app.)
+mkdir -p "$WORKTREE_ROOT/.claude"
+APP_ID="{{APP_ID}}"
+APP_PORT=$(( 30000 + $(hash_of "$WORKTREE_ROOT:$APP_ID") % 10000 ))
+cat > "$WORKTREE_ROOT/.claude/launch.json" <<JSON
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "{{APP_NAME}}",
+      "runtimeExecutable": "{{RUNTIME_EXECUTABLE}}",
+      "runtimeArgs": [{{RUNTIME_ARGS}}],
+      "autoPort": true,
+      "port": ${APP_PORT}
+    }
+  ]
+}
+JSON
+
+# === Fast-path: already set up ==============================================
+# Use a first-run artifact as the "already configured" signal. Good markers:
+# node_modules, vendor/bundle, .venv, or a touched .worktree-ready file.
+if [ -e {{SETUP_MARKER}} ]; then
+  echo "[setup-worktree] already configured — skipping first-run setup"
+  exit 0
+fi
+
+# === First-run setup (EDIT FOR YOUR STACK) ==================================
+
+# Bring in secrets. Prefer .worktreeinclude (Desktop copies .env in for you).
+# If you want a single source of truth instead, symlink from the main checkout:
+#   MAIN="$(dirname "$(git rev-parse --git-common-dir)")"
+#   [ -f "$MAIN/.env" ] && ln -sf "$MAIN/.env" .env
+
+# Install dependencies (pick the ones that apply):
+{{INSTALL_COMMANDS}}
+
+# Provision the per-worktree database (pick what applies):
+# export DB_NAME="{{APP_NAME}}_dev_$(hash_of "$WORKTREE_ROOT")"
+# createdb "$DB_NAME" 2>/dev/null || true
+{{DB_COMMANDS}}
+
+# Drop the idempotency marker so the fast-path catches next time.
+# touch .worktree-ready

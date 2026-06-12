@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "{{APP_NAME}}",
+      "runtimeExecutable": "{{RUNTIME_EXECUTABLE}}",
+      "runtimeArgs": [{{RUNTIME_ARGS}}],
+      "autoPort": true,
+      "port": {{APP_PORT}}
+    }
+  ]
+}

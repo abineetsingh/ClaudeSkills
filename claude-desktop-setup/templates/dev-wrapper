@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Per-worktree dev server launcher for Claude Code Desktop.
+#
+# Each git worktree gets its own DETERMINISTIC ports + isolated backing
+# services so multiple Desktop sessions run in parallel without colliding.
+# Pointed to by .claude/launch.json's "runtimeExecutable".
+set -e
+
+# --- Locate the worktree root ----------------------------------------------
+# This script is assumed to live at the repo root. If you nest it in a subdir
+# (e.g. script/dev), the cd below still resolves to the worktree top level via
+# git, which is what every other script must agree on.
+cd "$(dirname "$0")"
+WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$WORKTREE_ROOT"
+
+# --- Force UTF-8 ------------------------------------------------------------
+# Claude Code Desktop's launcher inherits a minimal environment with no LANG,
+# which makes some runtimes default to ASCII and choke on non-ASCII bytes in
+# .env or source files ("invalid byte sequence in US-ASCII"). Force UTF-8.
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
+# --- Deterministic per-worktree slots --------------------------------------
+# cksum(worktree_root:app) is stable for a worktree+app and differs across both
+# worktrees AND sibling apps in a monorepo. Salt per service so each slot is
+# independent. Range 0..9999. APP_ID is this app's stable id (its subdir in a
+# monorepo, or the app/repo name for a single-app repo).
+hash_of() { printf '%s' "$1" | cksum | cut -d' ' -f1; }
+APP_ID="{{APP_ID}}"
+
+# Main app port. Honor a PORT injected by Desktop (autoPort), else derive one.
+export PORT="${PORT:-$(( 30000 + $(hash_of "$WORKTREE_ROOT:$APP_ID") % 10000 ))}"
+
+# --- Auxiliary slots: KEEP ONLY WHAT THIS APP NEEDS, delete the rest --------
+
+# Frontend dev server (Vite / webpack / etc.):
+export VITE_PORT=$(( 40000 + $(hash_of "$WORKTREE_ROOT:$APP_ID:vite") % 10000 ))
+
+# Redis cache / ActionCable / rate-limit (shared bucket is fine — these
+# namespace their keys). Default Redis ships 16 DBs; raise with `databases N`.
+export REDIS_URL="redis://localhost:6379/$(( $(hash_of "$WORKTREE_ROOT:$APP_ID:redis") % 16 ))"
+
+# Background worker on its OWN slot. Queue keys (Sidekiq/Resque/BullMQ/Celery)
+# are typically UNNAMESPACED — two workers on one DB steal each other's jobs.
+export WORKER_REDIS_URL="redis://localhost:6379/$(( $(hash_of "$WORKTREE_ROOT:$APP_ID:worker") % 16 ))"
+
+# Per-worktree database NAME (createdb'd by the setup script):
+export DB_NAME="{{APP_NAME}}_dev_$(hash_of "$WORKTREE_ROOT:$APP_ID")"
+
+# --- Source per-worktree overrides if present ------------------------------
+# dotenv-style loaders DON'T override vars already set in the parent shell, so
+# source any per-worktree file here to make its values win at runtime.
+if [ -f .env.local ]; then set -a; . ./.env.local; set +a; fi
+
+# --- Boot the dev stack -----------------------------------------------------
+exec {{DEV_COMMAND}}
